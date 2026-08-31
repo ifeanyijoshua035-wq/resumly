@@ -1,13 +1,16 @@
 # Resumly
 
-A real resume builder: Node/Express + SQLite backend, vanilla JS frontend, Google
-Gemini for AI features, Flutterwave for premium payments.
+A real resume builder: Node/Express + Postgres backend, vanilla JS frontend,
+Google Gemini for AI features, Flutterwave for premium payments.
 
 ## What's real here
 
 - **Accounts**: registration/login with bcrypt-hashed passwords and JWT sessions.
-- **Data**: resumes, cover letters, and job-tracker entries are stored in a SQLite
-  database on the server (`backend/data.sqlite`), scoped per user.
+- **Data**: resumes, cover letters, and job-tracker entries are stored in a real
+  Postgres database (e.g. a free [Neon](https://neon.tech) project), scoped per
+  user. This survives restarts and redeploys — unlike a SQLite file sitting on
+  a host's local disk, which most hosts (Render included) wipe on every
+  restart or scale event.
 - **AI**: the AI Assistant, "draft with AI" and "generate cover letter" buttons call
   Google's Gemini API from the *server* (your key never reaches the browser).
 - **Payments**: "Upgrade" redirects to a real Flutterwave checkout page.
@@ -63,9 +66,7 @@ Gemini for AI features, Flutterwave for premium payments.
 - Hosting: run this somewhere with a public URL (Render, Railway, Fly.io, a VPS,
   etc.) — Flutterwave needs to redirect back to a real address, not `localhost`.
 - HTTPS in production.
-- A production database if you outgrow SQLite (Postgres is a natural next step —
-  swap `src/db.js`).
-- Your own API keys (see below).
+- Your own API keys and a Postgres connection string (see below).
 - Legal basics if this goes live for real users: a privacy policy, terms of
   service, and Flutterwave business verification (KYC) before live payments work.
 
@@ -76,7 +77,17 @@ cd backend
 npm install
 ```
 
-## 2. Configure
+## 2. Set up a Postgres database
+
+The easiest option is a free [Neon](https://neon.tech) project — create one,
+and copy the connection string it gives you (looks like
+`postgresql://user:password@ep-xxxx.region.aws.neon.tech/dbname?sslmode=require`).
+Any other Postgres provider works too, as long as you have a connection string.
+
+You don't need to create any tables yourself — `server.js` runs the `CREATE
+TABLE IF NOT EXISTS` statements automatically on startup.
+
+## 3. Configure
 
 ```bash
 cp .env.example .env
@@ -84,6 +95,7 @@ cp .env.example .env
 
 Then edit `.env`:
 
+- `DATABASE_URL` — the Postgres connection string from step 2.
 - `JWT_SECRET` — any long random string (e.g. `openssl rand -hex 32`).
 - `GEMINI_API_KEY` — from https://aistudio.google.com/apikey
 - `FLW_SECRET_KEY` / `FLW_PUBLIC_KEY` — from your Flutterwave dashboard
@@ -92,13 +104,13 @@ Then edit `.env`:
 - `FLW_SECRET_HASH` — a secret string *you* make up, pasted into both `.env`
   and your Flutterwave dashboard under Settings → Webhooks ("Secret hash"
   field). It's how the server confirms a webhook call really came from
-  Flutterwave (see step 4).
+  Flutterwave (see step 5).
 - Pricing itself isn't in `.env` — it's three region tiers defined in
   `src/utils/pricing.js` (see the **Pricing** section below).
 - `APP_URL` — the URL the app is reachable at (`http://localhost:4000` locally;
   your real domain in production). Flutterwave redirects here after checkout.
 
-## 3. Run
+## 4. Run
 
 ```bash
 npm start
@@ -108,7 +120,11 @@ Visit `http://localhost:4000`. Register an account, build a resume, and try
 upgrading — with Flutterwave **test** keys you can pay with their published
 test cards (in the Flutterwave docs) without moving real money.
 
-## 4. Set up the Flutterwave webhook (recommended before going live)
+If the server exits immediately with a database connection error, double-check
+`DATABASE_URL` — a typo'd password or a missing `?sslmode=require` are the
+usual culprits.
+
+## 5. Set up the Flutterwave webhook (recommended before going live)
 
 In your Flutterwave dashboard → Settings → Webhooks:
 
@@ -122,13 +138,26 @@ In your Flutterwave dashboard → Settings → Webhooks:
 This is what reliably marks a user premium even if they close the browser tab
 right after paying, before the redirect fires.
 
+## Deploying (e.g. Render)
+
+- Set the **root directory** to `backend` (that's where `package.json` lives).
+- **Build command**: `npm install`. **Start command**: `npm start`.
+- Add every variable from `.env` as an environment variable in your host's
+  dashboard — including `DATABASE_URL`.
+- This project ships a `.node-version` file pinning Node to `20` (an LTS
+  release). Some hosts will otherwise default to whatever their latest
+  supported Node build is, which can be a very new, less-tested version —
+  that's what originally caused a native-module build failure here before the
+  Postgres migration removed the need for any native compilation at all.
+
 ## Project layout
 
 ```
 backend/
-  server.js              Express app, mounts routes, serves the frontend
+  server.js              Express app, connects to Postgres, mounts routes, serves the frontend
+  .node-version           pins the Node version for hosts that read it (e.g. Render)
   src/
-    db.js                 SQLite schema + connection
+    db.js                  Postgres connection pool + schema + query helpers
     middleware/auth.js     JWT auth + premium-plan gate
     routes/
       auth.js              register / login / profile
@@ -141,6 +170,7 @@ backend/
     utils/
       ats.js                 keyword-matching ATS scorer
       pricing.js             region -> price/currency lookup (source of truth for billing)
+      asyncHandler.js         forwards a failed async route to Express's error handler
   public/
     index.html             app shell, favicon, meta tags
     styles.css              all styling (themes, layout, resume templates)
@@ -168,8 +198,9 @@ means ₦5,000, `10` means $10.00, no kobo/cents conversion needed.
 ## Notes on the free vs. premium split
 
 Gating is enforced **server-side** (`requirePremium` middleware on the AI and ATS
-routes, and a check in `PUT /api/auth/me` for the portfolio-link field) — not just
-hidden in the UI — so a user can't bypass it by editing frontend JS.
+routes, a template check in `routes/resumes.js`, and a check in `PUT /api/auth/me`
+for the portfolio-link field) — not just hidden in the UI — so a user can't
+bypass it by editing frontend JS or calling the API directly.
 
 PDF export happens in the browser (`html2canvas` + `jsPDF`); the free-plan
 watermark is applied client-side based on `profile.plan`, same as templates and

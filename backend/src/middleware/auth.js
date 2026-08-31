@@ -1,19 +1,25 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
+  let payload;
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const user = db.prepare('SELECT id, name, email, plan, phone, location, website FROM users WHERE id = ?').get(payload.sub);
+    payload = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+
+  try {
+    const user = await db.get('SELECT id, name, email, plan, phone, location, website FROM users WHERE id = $1', [payload.sub]);
     if (!user) return res.status(401).json({ error: 'Not authenticated' });
     req.user = user;
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    next(err);
   }
 }
 

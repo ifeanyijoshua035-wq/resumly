@@ -5,6 +5,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
+const db = require('./src/db');
 const authRoutes = require('./src/routes/auth');
 const resumeRoutes = require('./src/routes/resumes');
 const coverRoutes = require('./src/routes/covers');
@@ -67,4 +68,16 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Resumly API listening on http://localhost:${PORT}`));
+
+// The Postgres pool connects lazily on first query with better-sqlite3's old
+// synchronous file-open, this app could start listening immediately: init()
+// now runs the CREATE TABLE statements up front, so a bad DATABASE_URL fails
+// loudly at startup instead of on someone's first request.
+db.init()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Resumly API listening on http://localhost:${PORT}`));
+  })
+  .catch((err) => {
+    console.error('Failed to connect to the database - check DATABASE_URL in .env:', err.message);
+    process.exit(1);
+  });
