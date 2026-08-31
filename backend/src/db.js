@@ -21,6 +21,18 @@ const pool = new Pool({
   // that don't always chain to a CA Node trusts by default - relaxing
   // rejectUnauthorized is the standard, documented way to connect to them.
   ssl: { rejectUnauthorized: false },
+  // Neon's free tier suspends its compute when idle and "wakes up" on the
+  // next connection, which can take a few seconds - pg's 0-second (no limit
+  // in older versions) or short default timeout can trip during that wake-up,
+  // surfacing as a confusing failure on whatever request happens to be first.
+  connectionTimeoutMillis: 10000,
+});
+
+pool.on('error', (err) => {
+  // Fires for errors on idle clients in the pool (e.g. Neon closing a
+  // connection after its own idle timeout) - without this handler, such
+  // errors crash the whole Node process instead of just failing that query.
+  console.error('Unexpected Postgres pool error:', err.message);
 });
 
 async function init() {

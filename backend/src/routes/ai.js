@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth, requirePremium } = require('../middleware/auth');
 const { computeAts } = require('../utils/ats');
+const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -48,13 +49,13 @@ function buildPrompt(tool, input, resume) {
   }
 }
 
-router.post('/generate', requirePremium, async (req, res) => {
+router.post('/generate', requirePremium, asyncHandler(async (req, res) => {
   const { tool, input, resumeId } = req.body || {};
   if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'Gemini API key is not configured on the server' });
 
   let resume = null;
   if (resumeId) {
-    const row = db.prepare('SELECT data FROM resumes WHERE id = ? AND user_id = ?').get(resumeId, req.user.id);
+    const row = await db.get('SELECT data FROM resumes WHERE id = $1 AND user_id = $2', [resumeId, req.user.id]);
     if (row) resume = JSON.parse(row.data);
   }
 
@@ -65,15 +66,15 @@ router.post('/generate', requirePremium, async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err.message || 'AI request failed' });
   }
-});
+}));
 
-router.post('/ats-check', requirePremium, (req, res) => {
+router.post('/ats-check', requirePremium, asyncHandler(async (req, res) => {
   const { resumeId, jobDescription } = req.body || {};
   if (!resumeId || !jobDescription) return res.status(400).json({ error: 'resumeId and jobDescription are required' });
-  const row = db.prepare('SELECT data FROM resumes WHERE id = ? AND user_id = ?').get(resumeId, req.user.id);
+  const row = await db.get('SELECT data FROM resumes WHERE id = $1 AND user_id = $2', [resumeId, req.user.id]);
   if (!row) return res.status(404).json({ error: 'Resume not found' });
   const result = computeAts(JSON.parse(row.data), jobDescription);
   res.json(result);
-});
+}));
 
 module.exports = router;

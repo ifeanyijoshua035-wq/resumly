@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { PRICING, resolvePricing } = require('../utils/pricing');
+const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
@@ -30,7 +31,7 @@ async function flwFetch(path, options = {}) {
 }
 
 // Start a checkout - returns a hosted Flutterwave payment page link to redirect the user to.
-router.post('/initialize', requireAuth, async (req, res) => {
+router.post('/initialize', requireAuth, asyncHandler(async (req, res) => {
   if (!process.env.FLW_SECRET_KEY) return res.status(500).json({ error: 'Flutterwave is not configured on the server' });
 
   const region = ['NG', 'AFRICA', 'INTL'].includes(req.body?.region) ? req.body.region : 'INTL';
@@ -53,50 +54,53 @@ router.post('/initialize', requireAuth, async (req, res) => {
       }),
     });
 
-    db.prepare('INSERT INTO payments (id, user_id, reference, region, amount, currency, status, created_at) VALUES (?,?,?,?,?,?,?,?)').run(
-      crypto.randomUUID(), req.user.id, txRef, region, amount, currency, 'pending', Date.now()
+    await db.run(
+      'INSERT INTO payments (id, user_id, reference, region, amount, currency, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [crypto.randomUUID(), req.user.id, txRef, region, amount, currency, 'pending', Date.now()]
     );
 
     res.json({ paymentLink: data.data.link, txRef });
   } catch (err) {
     res.status(502).json({ error: err.message || 'Could not start checkout' });
   }
-});
+}));
 
 // Called by the frontend after Flutterwave redirects back, using the
 // transaction_id it appends to the redirect URL, to confirm and unlock premium.
-router.get('/verify/:transactionId', requireAuth, async (req, res) => {
+router.get('/verify/:transactionId', requireAuth, asyncHandler(async (req, res) => {
   if (!process.env.FLW_SECRET_KEY) return res.status(500).json({ error: 'Flutterwave is not configured on the server' });
   try {
     const data = await flwFetch(`/transactions/${encodeURIComponent(req.params.transactionId)}/verify`);
     const tx = data.data;
 
-    const payment = db.prepare('SELECT * FROM payments WHERE reference = ?').get(tx.tx_ref);
+    const payment = await db.get('SELECT * FROM payments WHERE reference = $1', [tx.tx_ref]);
     if (!payment || payment.user_id !== req.user.id) {
       return res.status(404).json({ error: 'No matching payment record for this transaction' });
     }
 
     // Never trust "successful" alone - also check the amount and currency
     // charged match what we asked for, so a tampered client request can't
-    // pay a smaller amount and still get marked premium.
-    const success = tx.status === 'successful' && tx.currency === payment.currency && Number(tx.amount) >= payment.amount;
+    // pay a smaller amount and still get marked premium. payment.amount is a
+    // NUMERIC column, which pg (deliberately) hands back as a string - cast
+    // it before comparing.
+    const success = tx.status === 'successful' && tx.currency === payment.currency && Number(tx.amount) >= Number(payment.amount);
 
-    db.prepare('UPDATE payments SET status = ? WHERE reference = ?').run(success ? 'success' : tx.status, tx.tx_ref);
+    await db.run('UPDATE payments SET status = $1 WHERE reference = $2', [success ? 'success' : tx.status, tx.tx_ref]);
     if (success) {
-      db.prepare('UPDATE users SET plan = ? WHERE id = ?').run('premium', req.user.id);
+      await db.run('UPDATE users SET plan = $1 WHERE id = $2', ['premium', req.user.id]);
     }
-    const user = db.prepare('SELECT id, name, email, plan, phone, location, website FROM users WHERE id = ?').get(req.user.id);
+    const user = await db.get('SELECT id, name, email, plan, phone, location, website FROM users WHERE id = $1', [req.user.id]);
     res.json({ success, user });
   } catch (err) {
     res.status(502).json({ error: err.message || 'Could not verify payment' });
   }
-});
+}));
 
 // Flutterwave server-to-server webhook - the reliable source of truth in
 // production (redirects can be interrupted by a closed tab; this can't be).
 // Flutterwave doesn't HMAC-sign the body - instead you set a secret string in
 // your dashboard (Settings -> Webhooks) and it echoes it back in this header.
-router.post('/webhook', (req, res) => {
+router.post('/webhook', asyncHandler(async (req, res) => {
   const signature = req.headers['verif-hash'];
   if (!signature || !process.env.FLW_SECRET_HASH || signature !== process.env.FLW_SECRET_HASH) {
     return res.status(401).send('Invalid signature');
@@ -105,13 +109,13 @@ router.post('/webhook', (req, res) => {
   const event = req.body;
   if (event.event === 'charge.completed' && event.data && event.data.status === 'successful') {
     const tx = event.data;
-    const payment = db.prepare('SELECT * FROM payments WHERE reference = ?').get(tx.tx_ref);
-    if (payment && tx.currency === payment.currency && Number(tx.amount) >= payment.amount) {
-      db.prepare('UPDATE payments SET status = ? WHERE reference = ?').run('success', tx.tx_ref);
-      db.prepare('UPDATE users SET plan = ? WHERE id = ?').run('premium', payment.user_id);
+    const payment = await db.get('SELECT * FROM payments WHERE reference = $1', [tx.tx_ref]);
+    if (payment && tx.currency === payment.currency && Number(tx.amount) >= Number(payment.amount)) {
+      await db.run('UPDATE payments SET status = $1 WHERE reference = $2', ['success', tx.tx_ref]);
+      await db.run('UPDATE users SET plan = $1 WHERE id = $2', ['premium', payment.user_id]);
     }
   }
   res.sendStatus(200);
-});
+}));
 
 module.exports = router;
