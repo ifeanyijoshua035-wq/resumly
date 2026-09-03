@@ -20,14 +20,21 @@ Google Gemini for AI features, Flutterwave for premium payments.
   currency — before flipping the account to `premium`. A webhook endpoint
   (`/api/payments/webhook`) is also included, which is the reliable way to
   confirm payments in production (redirects can be interrupted; webhooks can't).
-- **Regional pricing**: three tiers — Nigeria (₦5,000), rest of Africa (₦8,000),
-  outside Africa ($10). The user picks a region on the Subscription page; the
-  server looks up the real price from `src/utils/pricing.js` and ignores any
-  amount the client might send, so the price can't be tampered with from the
-  browser. **Read the note at the top of `pricing.js`** — a Flutterwave account
-  usually settles in one home currency unless multi-currency payouts are
-  enabled, so confirm that with Flutterwave before relying on the $10 tier
-  landing in your account as USD.
+- **Regional pricing, detected automatically**: three tiers — Nigeria (₦5,000),
+  rest of Africa (₦8,000), outside Africa ($10). The region isn't something the
+  user picks — it's detected from their IP address via
+  [ipinfo.io](https://ipinfo.io) (`src/utils/geo.js`) every time they open the
+  Subscription page and again right before checkout, so nobody can select a
+  cheaper region than where they're actually connecting from. The server
+  ignores any region value a client might try to send directly; the amount
+  charged always comes from `src/utils/pricing.js`. **Read the note at the top
+  of `pricing.js`** — a Flutterwave account usually settles in one home
+  currency unless multi-currency payouts are enabled, so confirm that with
+  Flutterwave before relying on the $10 tier landing in your account as USD.
+  Worth knowing: IP geolocation isn't perfect — a VPN or a mobile carrier
+  routing traffic through another country can occasionally show the wrong
+  region. That's a limitation of IP-based detection generally, not something
+  this implementation can fully close.
 - **Security**: `helmet` for standard security headers, and rate limiting on
   login/register (brute-force protection) and on the AI routes (so one abusive
   client can't run up your Gemini bill).
@@ -107,6 +114,9 @@ Then edit `.env`:
   Flutterwave (see step 5).
 - Pricing itself isn't in `.env` — it's three region tiers defined in
   `src/utils/pricing.js` (see the **Pricing** section below).
+- `IPINFO_TOKEN` — optional while testing (ipinfo.io works unauthenticated at
+  a low rate limit), but sign up for a free token at https://ipinfo.io before
+  going live, since every Upgrade click makes one lookup.
 - `APP_URL` — the URL the app is reachable at (`http://localhost:4000` locally;
   your real domain in production). Flutterwave redirects here after checkout.
 
@@ -170,6 +180,7 @@ backend/
     utils/
       ats.js                 keyword-matching ATS scorer
       pricing.js             region -> price/currency lookup (source of truth for billing)
+      geo.js                  IP address -> pricing region, via ipinfo.io
       asyncHandler.js         forwards a failed async route to Express's error handler
   public/
     index.html             app shell, favicon, meta tags

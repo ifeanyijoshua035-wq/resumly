@@ -975,24 +975,15 @@ function bindProfile(){
 }
 
 /* ===================== SUBSCRIPTION ===================== */
-const REGIONS = [
-  {id:'NG', label:'Nigeria', price:'\u20a65,000', hint:'billed in NGN'},
-  {id:'AFRICA', label:'Rest of Africa', price:'\u20a68,000', hint:'billed in NGN'},
-  {id:'INTL', label:'Outside Africa', price:'$10', hint:'billed in USD'},
-];
-function guessRegion(){
-  try{
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-    if(tz === 'Africa/Lagos') return 'NG';
-    if(tz.startsWith('Africa/')) return 'AFRICA';
-  }catch(e){}
-  return 'INTL';
+let detectedPricing = null; // filled in by loadDetectedPricing()
+async function loadDetectedPricing(){
+  try{ detectedPricing = await api('/api/payments/region'); }
+  catch(e){ detectedPricing = null; }
 }
-let selectedRegion = guessRegion();
 function subscriptionView(){
   return `
   <div class="page-head"><h1>${t('subscription')}</h1></div>
-  <p class="muted" style="max-width:640px;">Payments are processed securely by Flutterwave. You'll be redirected to a Flutterwave checkout page and brought back here once it's done.</p>
+  <p class="muted" style="max-width:640px;">Payments are processed securely by Flutterwave. Pricing is based on where you're connecting from and can't be changed manually.</p>
   <div class="row row-2" style="align-items:stretch;">
     <div class="card">
       <h3>Free</h3><p class="muted" style="font-size:13px;">Everything you need to build and download a resume.</p>
@@ -1011,22 +1002,25 @@ function subscriptionView(){
         <li>Unlimited PDF downloads</li><li>No watermark</li><li>Premium templates</li><li>Personal website / portfolio link</li>
       </ul>
       ${isPremium() ? '<span class="badge badge-accent">Current plan</span>' : `
-        <div class="section-title" style="margin-top:4px;">Where are you paying from?</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
-          ${REGIONS.map(r=>`<button class="pill-tab ${selectedRegion===r.id?'active':''}" data-region="${r.id}">${r.label} — ${r.price}</button>`).join('')}
+        <div id="detected-pricing" style="margin:10px 0 14px;font-size:13px;color:var(--text-2);">
+          ${detectedPricing ? `Your price: <strong style="color:var(--text);">${detectedPricing.pricing.label}</strong> <span class="badge badge-outline">${detectedPricing.pricing.name}</span>` : '<span class="spinner"></span> Detecting your region…'}
         </div>
-        <button class="btn btn-gold" id="upgrade-btn">${t('upgrade')} — ${REGIONS.find(r=>r.id===selectedRegion).price}</button>
+        <button class="btn btn-gold" id="upgrade-btn" ${detectedPricing?'':'disabled'}>${t('upgrade')}${detectedPricing?' — '+detectedPricing.pricing.label:''}</button>
       `}
     </div>
   </div>`;
 }
 function bindSubscription(){
-  document.querySelectorAll('[data-region]').forEach(b=>b.addEventListener('click', ()=>{ selectedRegion = b.dataset.region; render(); }));
   const up = document.getElementById('upgrade-btn');
-  if(up) up.addEventListener('click', async ()=>{
+  if(!up) return;
+  if(!detectedPricing){
+    loadDetectedPricing().then(()=>{ if(currentRoute().route==='subscription') render(); });
+    return;
+  }
+  up.addEventListener('click', async ()=>{
     const old = up.innerHTML; up.innerHTML = '<span class="spinner"></span> Redirecting...'; up.disabled = true;
     try{
-      const {paymentLink} = await api('/api/payments/initialize', {method:'POST', body:{region:selectedRegion}});
+      const {paymentLink} = await api('/api/payments/initialize', {method:'POST'});
       window.location.href = paymentLink;
     }catch(e){ toast(e.message); up.innerHTML = old; up.disabled = false; }
   });

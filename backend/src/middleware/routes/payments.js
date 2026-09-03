@@ -3,16 +3,22 @@ const crypto = require('crypto');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { PRICING, resolvePricing } = require('../utils/pricing');
+const { detectRegion } = require('../utils/geo');
 const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
-// The client only ever sends which region tier they picked (NG / AFRICA / INTL) -
-// never an amount. The actual price is always looked up here, server-side, so
-// nobody can pay less by editing frontend JS or the network request.
 router.get('/pricing', (req, res) => {
   res.json({ pricing: PRICING });
 });
+
+// Lets the frontend show "here's your price" before checkout, using the same
+// IP-based detection /initialize uses - so nothing is a surprise once they
+// click Upgrade.
+router.get('/region', requireAuth, asyncHandler(async (req, res) => {
+  const { region, country } = await detectRegion(req.ip);
+  res.json({ region, country, pricing: resolvePricing(region) });
+}));
 
 const FLW_BASE = 'https://api.flutterwave.com/v3';
 
@@ -34,7 +40,10 @@ async function flwFetch(path, options = {}) {
 router.post('/initialize', requireAuth, asyncHandler(async (req, res) => {
   if (!process.env.FLW_SECRET_KEY) return res.status(500).json({ error: 'Flutterwave is not configured on the server' });
 
-  const region = ['NG', 'AFRICA', 'INTL'].includes(req.body?.region) ? req.body.region : 'INTL';
+  // The region is never taken from the client - it's detected from the
+  // request's own IP address, every time, so nobody can pay the Nigeria
+  // price from outside Nigeria just by picking a button in devtools.
+  const { region, country } = await detectRegion(req.ip);
   const { amount, currency } = resolvePricing(region);
 
   try {
@@ -50,7 +59,7 @@ router.post('/initialize', requireAuth, asyncHandler(async (req, res) => {
         redirect_url: redirectUrl,
         customer: { email: req.user.email, name: req.user.name },
         customizations: { title: 'Resumly Premium', description: `Resumly premium upgrade (${region})` },
-        meta: { user_id: req.user.id, region },
+        meta: { user_id: req.user.id, region, country },
       }),
     });
 
@@ -59,7 +68,7 @@ router.post('/initialize', requireAuth, asyncHandler(async (req, res) => {
       [crypto.randomUUID(), req.user.id, txRef, region, amount, currency, 'pending', Date.now()]
     );
 
-    res.json({ paymentLink: data.data.link, txRef });
+    res.json({ paymentLink: data.data.link, txRef, region, country });
   } catch (err) {
     res.status(502).json({ error: err.message || 'Could not start checkout' });
   }
