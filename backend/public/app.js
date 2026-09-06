@@ -120,7 +120,7 @@ async function boot(){
   try{
     const {user} = await api('/api/auth/me');
     S.profile = user;
-    await Promise.all([loadResumes(), loadCovers(), loadJobs()]);
+    await Promise.all([loadResumes(), loadCovers(), loadJobs(), loadDetectedPricing()]);
     await handlePaymentCallback();
     if(!location.hash) location.hash = '#/dashboard';
     render();
@@ -296,7 +296,7 @@ function bindLanding(){
       }
       S.token = res.token; localStorage.setItem('rf_token', S.token);
       S.profile = res.user;
-      await Promise.all([loadResumes(), loadCovers(), loadJobs()]);
+      await Promise.all([loadResumes(), loadCovers(), loadJobs(), loadDetectedPricing()]);
       location.hash = '#/dashboard'; render();
     }catch(e){
       errEl.textContent = e.message; errEl.classList.remove('hidden');
@@ -981,9 +981,10 @@ async function loadDetectedPricing(){
   catch(e){ detectedPricing = null; }
 }
 function subscriptionView(){
+  const renewsOn = S.profile.premiumUntil ? new Date(S.profile.premiumUntil).toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'}) : null;
   return `
   <div class="page-head"><h1>${t('subscription')}</h1></div>
-  <p class="muted" style="max-width:640px;">Payments are processed securely by Flutterwave. Pricing is based on where you're connecting from and can't be changed manually.</p>
+  <p class="muted" style="max-width:640px;">Premium is a monthly subscription that renews automatically. Payments are processed securely by Flutterwave, and pricing is based on where you're connecting from.</p>
   <div class="row row-2" style="align-items:stretch;">
     <div class="card">
       <h3>Free</h3><p class="muted" style="font-size:13px;">Everything you need to build and download a resume.</p>
@@ -995,34 +996,49 @@ function subscriptionView(){
       ${!isPremium() ? '<span class="badge badge-outline">Current plan</span>' : ''}
     </div>
     <div class="card" style="border-color:var(--gold);">
-      <h3>Premium <span class="badge badge-gold">Best value</span></h3><p class="muted" style="font-size:13px;">Everything in Free, plus AI and unlimited exports.</p>
+      <h3>Premium <span class="badge badge-gold">Best value</span></h3><p class="muted" style="font-size:13px;">Everything in Free, plus AI and unlimited exports. Billed monthly, cancel anytime.</p>
       <ul style="padding-left:18px;font-size:13.5px;line-height:1.9;">
         <li>ATS score checker</li><li>AI resume writer</li><li>AI cover letter generator</li>
         <li>AI interview questions</li><li>Resume grammar checker</li><li>Resume improvement suggestions</li>
         <li>Unlimited PDF downloads</li><li>No watermark</li><li>Premium templates</li><li>Personal website / portfolio link</li>
       </ul>
-      ${isPremium() ? '<span class="badge badge-accent">Current plan</span>' : `
+      ${isPremium() ? `
+        <span class="badge badge-accent">Current plan</span>
+        ${renewsOn ? `<p class="muted" style="font-size:12.5px;margin-top:8px;">Renews automatically on ${renewsOn}.</p>` : ''}
+        <button class="btn btn-sm" id="cancel-btn" style="margin-top:6px;">Cancel auto-renewal</button>
+      ` : `
         <div id="detected-pricing" style="margin:10px 0 14px;font-size:13px;color:var(--text-2);">
-          ${detectedPricing ? `Your price: <strong style="color:var(--text);">${detectedPricing.pricing.label}</strong> <span class="badge badge-outline">${detectedPricing.pricing.name}</span>` : '<span class="spinner"></span> Detecting your region…'}
+          ${detectedPricing ? `Your price: <strong style="color:var(--text);">${detectedPricing.pricing.label}/month</strong> <span class="badge badge-outline">${detectedPricing.pricing.name}</span>` : '<span class="spinner"></span> Detecting your region…'}
         </div>
-        <button class="btn btn-gold" id="upgrade-btn" ${detectedPricing?'':'disabled'}>${t('upgrade')}${detectedPricing?' — '+detectedPricing.pricing.label:''}</button>
+        <button class="btn btn-gold" id="upgrade-btn" ${detectedPricing?'':'disabled'}>${t('upgrade')}${detectedPricing?' — '+detectedPricing.pricing.label+'/mo':''}</button>
       `}
     </div>
   </div>`;
 }
 function bindSubscription(){
   const up = document.getElementById('upgrade-btn');
-  if(!up) return;
-  if(!detectedPricing){
-    loadDetectedPricing().then(()=>{ if(currentRoute().route==='subscription') render(); });
-    return;
+  if(up){
+    if(!detectedPricing){
+      loadDetectedPricing().then(()=>{ if(currentRoute().route==='subscription') render(); });
+    } else {
+      up.addEventListener('click', async ()=>{
+        const old = up.innerHTML; up.innerHTML = '<span class="spinner"></span> Redirecting...'; up.disabled = true;
+        try{
+          const {paymentLink} = await api('/api/payments/initialize', {method:'POST'});
+          window.location.href = paymentLink;
+        }catch(e){ toast(e.message); up.innerHTML = old; up.disabled = false; }
+      });
+    }
   }
-  up.addEventListener('click', async ()=>{
-    const old = up.innerHTML; up.innerHTML = '<span class="spinner"></span> Redirecting...'; up.disabled = true;
+  const cancelBtn = document.getElementById('cancel-btn');
+  if(cancelBtn) cancelBtn.addEventListener('click', async ()=>{
+    if(!confirm('Cancel auto-renewal? You\'ll keep premium access until your current billing period ends.')) return;
+    const old = cancelBtn.innerHTML; cancelBtn.innerHTML = '<span class="spinner"></span>'; cancelBtn.disabled = true;
     try{
-      const {paymentLink} = await api('/api/payments/initialize', {method:'POST'});
-      window.location.href = paymentLink;
-    }catch(e){ toast(e.message); up.innerHTML = old; up.disabled = false; }
+      const {message} = await api('/api/payments/cancel', {method:'POST'});
+      toast(message);
+      cancelBtn.remove();
+    }catch(e){ toast(e.message); cancelBtn.innerHTML = old; cancelBtn.disabled = false; }
   });
 }
 
