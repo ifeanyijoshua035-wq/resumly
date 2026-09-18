@@ -13,15 +13,22 @@ Google Gemini for AI features, Flutterwave for premium payments.
   restart or scale event.
 - **AI**: the AI Assistant, "draft with AI" and "generate cover letter" buttons call
   Google's Gemini API from the *server* (your key never reaches the browser).
-- **Payments**: "Upgrade" redirects to a real Flutterwave checkout page.
-  Flutterwave redirects back to `/payment/callback` with a `transaction_id`,
-  the frontend calls `/api/payments/verify/:transactionId`, and the server
-  confirms the charge with Flutterwave — checking status, amount, *and*
-  currency — before flipping the account to `premium`. A webhook endpoint
-  (`/api/payments/webhook`) is also included, which is the reliable way to
-  confirm payments in production (redirects can be interrupted; webhooks can't).
-- **Regional pricing, detected automatically**: three tiers — Nigeria (₦5,000),
-  rest of Africa (₦8,000), outside Africa ($10). The region isn't something the
+- **Payments — a real recurring subscription**: Premium is a genuine monthly
+  subscription via [Flutterwave Payment Plans](https://developer.flutterwave.com/v3.0/docs/payment-plans-1),
+  not a one-time unlock. "Upgrade" creates (or reuses) a payment plan for the
+  user's region and redirects to a real Flutterwave checkout page for the
+  first charge. From then on, **Flutterwave itself re-charges the saved card
+  every month automatically** — this server does nothing to trigger renewals;
+  it only listens for the results via webhook. Each user's access is tracked
+  with a real `premium_until` expiry (`src/db.js`), which is re-checked and
+  self-corrected on every login — so if a renewal is ever missed (card
+  declined, subscription cancelled), the account quietly reverts to `free` on
+  its own once the paid period ends, with no cron job required. Users can
+  cancel auto-renewal from the Subscription page (`POST /api/payments/cancel`)
+  and keep access through the period they already paid for, same as any
+  normal subscription product.
+- **Regional pricing, detected automatically**: three tiers — Nigeria (₦5,000/mo),
+  rest of Africa (₦8,000/mo), outside Africa ($10/mo). The region isn't something the
   user picks — it's detected from their IP address via
   [ipinfo.io](https://ipinfo.io) (`src/utils/geo.js`) every time they open the
   Subscription page and again right before checkout, so nobody can select a
@@ -74,8 +81,16 @@ Google Gemini for AI features, Flutterwave for premium payments.
   etc.) — Flutterwave needs to redirect back to a real address, not `localhost`.
 - HTTPS in production.
 - Your own API keys and a Postgres connection string (see below).
-- Legal basics if this goes live for real users: a privacy policy, terms of
-  service, and Flutterwave business verification (KYC) before live payments work.
+- **Fill in the placeholders in `public/privacy.html` and `public/terms.html`
+  before submitting for Flutterwave business verification** — both pages
+  exist and are linked from the app's footer and login screen, but they
+  contain bracketed placeholders (`[YOUR LEGAL BUSINESS NAME]`,
+  `[YOUR SUPPORT EMAIL]`, a refund policy, and a governing-law clause) that
+  need real values. Submitting with placeholders still in place is likely to
+  get the verification rejected — and none of this is legal advice; for
+  anything beyond the basics (refund terms, governing law, data protection
+  compliance for your specific countries), have a lawyer review both pages
+  before relying on them.
 
 ## 1. Install
 
@@ -134,7 +149,7 @@ If the server exits immediately with a database connection error, double-check
 `DATABASE_URL` — a typo'd password or a missing `?sslmode=require` are the
 usual culprits.
 
-## 5. Set up the Flutterwave webhook (recommended before going live)
+## 5. Set up the Flutterwave webhook (not optional — this is where renewals happen)
 
 In your Flutterwave dashboard → Settings → Webhooks:
 
@@ -145,8 +160,12 @@ In your Flutterwave dashboard → Settings → Webhooks:
 2. Set the "Secret hash" field to the same value you put in `FLW_SECRET_HASH`
    in `.env`.
 
-This is what reliably marks a user premium even if they close the browser tab
-right after paying, before the redirect fires.
+For a one-time payment this webhook would just be a nice-to-have (a redirect
+usually gets there first). For a subscription it's essential: **every monthly
+renewal is billed by Flutterwave automatically, with no request from this
+server at all** — the webhook is the only way this app ever finds out a
+renewal happened, so without it, users would lose premium access every month
+even though they're still being charged.
 
 ## Deploying (e.g. Render)
 
@@ -175,12 +194,13 @@ backend/
       covers.js             cover letter CRUD
       jobs.js               job tracker CRUD
       ai.js                  Gemini-powered writer/cover/interview/grammar/improve + ATS score
-      payments.js           Flutterwave initialize / verify / webhook
+      payments.js           Flutterwave: create/reuse payment plans, initialize, verify, cancel, webhook
       public.js               no-auth route that serves shared /r/:id resume links
     utils/
       ats.js                 keyword-matching ATS scorer
       pricing.js             region -> price/currency lookup (source of truth for billing)
       geo.js                  IP address -> pricing region, via ipinfo.io
+      publicUser.js           the user object shape returned to the frontend
       asyncHandler.js         forwards a failed async route to Express's error handler
   public/
     index.html             app shell, favicon, meta tags

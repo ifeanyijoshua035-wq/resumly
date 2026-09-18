@@ -55,6 +55,8 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // Serve the frontend
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
+app.get('/terms', (req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')));
 // '/r/:id' is a real (non-hash) path so shared resume links work as plain
 // URLs - anyone opening one gets the SPA shell, which then fetches the
 // public resume data client-side and renders a read-only view, no login needed.
