@@ -1,0 +1,66 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const db = require('../db');
+const { requireAuth } = require('../middleware/auth');
+const { publicUser } = require('../utils/publicUser');
+const asyncHandler = require('../utils/asyncHandler');
+
+const router = express.Router();
+
+function sign(user) {
+  return jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+}
+
+router.post('/register', asyncHandler(async (req, res) => {
+  const { name, email, password } = req.body || {};
+  if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password are required' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+  const existing = await db.get('SELECT id FROM users WHERE email = $1', [email.toLowerCase().trim()]);
+  if (existing) return res.status(409).json({ error: 'An account with that email already exists' });
+
+  const id = crypto.randomUUID();
+  const passwordHash = bcrypt.hashSync(password, 10);
+  const user = await db.get(
+    'INSERT INTO users (id, name, email, password_hash, plan, created_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+    [id, name.trim(), email.toLowerCase().trim(), passwordHash, 'free', Date.now()]
+  );
+
+  res.json({ token: sign(user), user: publicUser(user) });
+}));
+
+router.post('/login', asyncHandler(async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+  const user = await db.get('SELECT * FROM users WHERE email = $1', [email.toLowerCase().trim()]);
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({ error: 'Incorrect email or password' });
+  }
+  res.json({ token: sign(user), user: publicUser(user) });
+}));
+
+router.get('/me', requireAuth, (req, res) => {
+  // req.user already comes from db.getUserById() in the auth middleware,
+  // which self-heals a lapsed premium_until into plan:'free' on every fetch -
+  // so this always reflects the true current state, not a stale cached flag.
+  res.json({ user: publicUser(req.user) });
+});
+
+router.put('/me', requireAuth, asyncHandler(async (req, res) => {
+  const { name, phone, location, website } = req.body || {};
+  const current = await db.get('SELECT * FROM users WHERE id = $1', [req.user.id]);
+  const wantsWebsite = website !== undefined ? website : current.website;
+  if (wantsWebsite && current.plan !== 'premium') {
+    return res.status(403).json({ error: 'Portfolio link is a premium feature', code: 'PREMIUM_REQUIRED' });
+  }
+  const updated = await db.get(
+    'UPDATE users SET name = $1, phone = $2, location = $3, website = $4 WHERE id = $5 RETURNING *',
+    [name ?? current.name, phone ?? current.phone, location ?? current.location, wantsWebsite ?? current.website, req.user.id]
+  );
+  res.json({ user: publicUser(updated) });
+}));
+
+module.exports = router;
